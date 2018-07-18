@@ -1,37 +1,59 @@
 #include <iostream>
 #include <X11/Xlib.h>
+#include <cstring>
+#include <string>
+
+void existenceCheck(void* checkObject, const char* errorMessage, Display* display)
+{
+  if(!checkObject) {
+    fprintf(stderr, "%s", errorMessage);
+    if(display)
+    {
+      XCloseDisplay(display);
+    }
+    exit(1);
+  }
+}
 
 int main()
 {
-  Display *display;
-  display = XOpenDisplay(NULL);
-  if (!display)
+  // Open default display
+  Display* display = XOpenDisplay(NULL);
+  existenceCheck(display, "Unable to open display!", display);
+
+  // Record screen and root window attributes
+  int screen = DefaultScreen(display);
+  Window rootWin = RootWindow(display, screen);
+  XWindowAttributes rootWinAttr;
+  XGetWindowAttributes(display, rootWin, &rootWinAttr);
+  GC graphicsContext = DefaultGC(display, screen);
+
+  // Capture image from display
+  XImage* image = XGetImage(display, rootWin, 0, 0, rootWinAttr.width, rootWinAttr.height, AllPlanes, ZPixmap);
+  existenceCheck(image, "Unable to capture image!", display);
+
+  // Create new window and subscribe to events
+  Window newWin = XCreateSimpleWindow(display, rootWin, 10, 10, 100, 100, 1, BlackPixel(display, screen), WhitePixel(display, screen));
+  XMapWindow(display, newWin);
+  XSelectInput(display, newWin, ExposureMask | KeyPressMask);
+  XEvent event;
+
+  // Main event loop for window
+  const char *message = "Hello, World!";
+  while (True)
   {
-    fprintf(stderr, "unable to connect to display");
-    return 7;
+    XNextEvent(display, &event);
+    if (event.type == Expose)
+    {
+      XFillRectangle(display, newWin, graphicsContext, 20, 20, 10, 10);
+      XDrawString(display, newWin, graphicsContext, 10, 50, message, strlen(message));
+    }
+    else if (event.type == KeyPress)
+    {
+      break;
+    }
   }
-  Window w;
-  int x, y, i;
-  unsigned m;
-  Window root = XDefaultRootWindow(display);
-  if (!root)
-  {
-    fprintf(stderr, "unable to open rootwindow");
-    return 8;
-  }
-  if (!XQueryPointer(display, root, &root, &w, &x, &y, &i, &i, &m))
-  {
-    printf("unable to query pointer\n");
-    return 9;
-  }
-  XImage *image;
-  XWindowAttributes attr;
-  XGetWindowAttributes(display, root, &attr);
-  image = XGetImage(display, root, 0, 0, attr.width, attr.height, AllPlanes, XYPixmap);
+
+  // Goodbye
   XCloseDisplay(display);
-  if (!image)
-  {
-    printf("unable to get image\n");
-    return 10;
-  }
 }
