@@ -1,59 +1,87 @@
 #include <iostream>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <X11/Xlib.h>
-#include <cstring>
-#include <string>
+#include <X11/extensions/XShm.h>
+#include <X11/Xutil.h>
 
-void existenceCheck(void* checkObject, const char* errorMessage, Display* display)
-{
-  if(!checkObject) {
-    fprintf(stderr, "%s", errorMessage);
-    if(display)
-    {
-      XCloseDisplay(display);
-    }
-    exit(1);
-  }
-}
+const int TEST_SIZE = 512;
 
 int main()
 {
   // Open default display
-  Display* display = XOpenDisplay(NULL);
-  existenceCheck(display, "Unable to open display!", display);
-
-  // Record screen and root window attributes
+  Display *display = XOpenDisplay(nullptr);
   int screen = DefaultScreen(display);
   Window rootWin = RootWindow(display, screen);
-  XWindowAttributes rootWinAttr;
-  XGetWindowAttributes(display, rootWin, &rootWinAttr);
   GC graphicsContext = DefaultGC(display, screen);
 
-  // Capture image from display
-  XImage* image = XGetImage(display, rootWin, 0, 0, rootWinAttr.width, rootWinAttr.height, AllPlanes, ZPixmap);
-  existenceCheck(image, "Unable to capture image!", display);
-
   // Create new window and subscribe to events
-  Window newWin = XCreateSimpleWindow(display, rootWin, 10, 10, 100, 100, 1, BlackPixel(display, screen), WhitePixel(display, screen));
+  Window newWin = XCreateSimpleWindow(display, rootWin, 0, 0, TEST_SIZE, TEST_SIZE, 1, BlackPixel(display, screen),
+                                      WhitePixel(display, screen));
   XMapWindow(display, newWin);
   XSelectInput(display, newWin, ExposureMask | KeyPressMask);
   XEvent event;
 
+  // Allocate shared memory for image capturing
+  Visual *visual = DefaultVisual(display, 0);
+  XShmSegmentInfo shminfo;
+  int depth = visual->bits_per_rgb * 3;
+  XImage *image = XShmCreateImage(display, visual, depth, ZPixmap, NULL, &shminfo, TEST_SIZE, TEST_SIZE);
+  shminfo.shmid = shmget(IPC_PRIVATE, image->bytes_per_line * image->height, IPC_CREAT | 0666);
+  shmat(shminfo.shmid, nullptr, 0);
+  shminfo.shmaddr = image->data;
+  shminfo.readOnly = False;
+  XShmAttach(display, &shminfo);
+
   // Main event loop for window
-  const char *message = "Hello, World!";
-  while (True)
+  bool exposed = false;
+  bool killWindow = false;
+  while (!killWindow)
   {
-    XNextEvent(display, &event);
-    if (event.type == Expose)
+    // Handle pending events
+    if (XPending(display) > 0)
     {
-      XFillRectangle(display, newWin, graphicsContext, 20, 20, 10, 10);
-      XDrawString(display, newWin, graphicsContext, 10, 50, message, strlen(message));
+      XNextEvent(display, &event);
+      if (event.type == Expose)
+      {
+        exposed = true;
+      } else if (event.type == NoExpose)
+      {
+        exposed = false;
+      } else if (event.type == KeyPress)
+      {
+        killWindow = true;
+      }
     }
-    else if (event.type == KeyPress)
+
+    // Capture the original image
+    XShmGetImage(display, rootWin, image, 0, 0, AllPlanes);
+
+    // Modify the image
+    if(image->data != nullptr)
     {
-      break;
+      long pixel = 0;
+      for (int x = 0; x < image->width; x++)
+      {
+        for (int y = 0; y < image->height; y++)
+        {
+          // TODO: Figure out why image->data is always null
+          pixel = XGetPixel(image, x, y);
+
+          // TODO: Verify that this mechanism for inverting the colors actually works.
+          XPutPixel(image, x, y, ~pixel);
+        }
+      }
+    }
+
+    // Output the modified image
+    if (exposed && killWindow == false)
+    {
+      XShmPutImage(display, newWin, graphicsContext, image, 0, 0, 0, 0, 512, 512, true);
     }
   }
 
   // Goodbye
+  XFree(image);
   XCloseDisplay(display);
 }
