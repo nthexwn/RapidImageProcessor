@@ -7,6 +7,18 @@
 
 const int TEST_SIZE = 512;
 
+static int handleXError(Display *display, XErrorEvent *event)
+{
+  printf("XErrorEvent triggered!\n");
+  printf("error_code: %d", event->error_code);
+  printf("minor_code: %d", event->minor_code);
+  printf("request_code: %d", event->request_code);
+  printf("resourceid: %lu", event->resourceid);
+  printf("serial: %d", event->error_code);
+  printf("type: %d", event->type);
+  return 0;
+}
+
 int main()
 {
   // Open default display
@@ -16,24 +28,28 @@ int main()
   GC graphicsContext = DefaultGC(display, screen);
 
   // Create new window and subscribe to events
-  Window newWin = XCreateSimpleWindow(display, rootWin, 0, 0, TEST_SIZE, TEST_SIZE, 1, BlackPixel(display, screen),
-                                      WhitePixel(display, screen));
+  long blackPixel = BlackPixel(display, screen);
+  long whitePixel = WhitePixel(display, screen);
+  Window newWin = XCreateSimpleWindow(display, rootWin, 0, 0, TEST_SIZE, TEST_SIZE, 1, blackPixel, whitePixel);
   XMapWindow(display, newWin);
   XSelectInput(display, newWin, ExposureMask | KeyPressMask);
-  XEvent event;
 
   // Allocate shared memory for image capturing
-  Visual *visual = DefaultVisual(display, 0);
   XShmSegmentInfo shminfo;
-  int depth = visual->bits_per_rgb * 3;
-  XImage *image = XShmCreateImage(display, visual, depth, ZPixmap, NULL, &shminfo, TEST_SIZE, TEST_SIZE);
-  shminfo.shmid = shmget(IPC_PRIVATE, image->bytes_per_line * image->height, IPC_CREAT | 0666);
-  shmat(shminfo.shmid, nullptr, 0);
+  Visual *visual = DefaultVisual(display, screen);
+  int depth = DefaultDepth(display, screen);
+  XImage *image = XShmCreateImage(display, visual, depth, ZPixmap, nullptr, &shminfo, TEST_SIZE, TEST_SIZE);
+  shminfo.shmid = shmget(IPC_PRIVATE, image->bytes_per_line * image->height, IPC_CREAT | 0777);
+  image->data = (char*)shmat(shminfo.shmid, 0, 0);
   shminfo.shmaddr = image->data;
+  XSetErrorHandler(handleXError);
   shminfo.readOnly = False;
   XShmAttach(display, &shminfo);
+  XSync(display, false);
+  shmctl(shminfo.shmid, IPC_RMID, 0);
 
-  // Main event loop for window
+  // Main event loop for new window
+  XEvent event;
   bool exposed = false;
   bool killWindow = false;
   while (!killWindow)
@@ -58,17 +74,15 @@ int main()
     XShmGetImage(display, rootWin, image, 0, 0, AllPlanes);
 
     // Modify the image
-    if(image->data != nullptr)
+    if(image->data != nullptr) // NEVER TRUE.  DATA IS ALWAYS NULL!
     {
       long pixel = 0;
       for (int x = 0; x < image->width; x++)
       {
         for (int y = 0; y < image->height; y++)
         {
-          // TODO: Figure out why image->data is always null
+          // Invert the color of each pixel
           pixel = XGetPixel(image, x, y);
-
-          // TODO: Verify that this mechanism for inverting the colors actually works.
           XPutPixel(image, x, y, ~pixel);
         }
       }
@@ -77,11 +91,13 @@ int main()
     // Output the modified image
     if (exposed && killWindow == false)
     {
-      XShmPutImage(display, newWin, graphicsContext, image, 0, 0, 0, 0, 512, 512, true);
+      XShmPutImage(display, newWin, graphicsContext, image, 0, 0, 0, 0, 512, 512, false);
     }
   }
 
   // Goodbye
-  XFree(image);
+  XShmDetach(display, &shminfo);
+  XDestroyImage(image);
+  shmdt(shminfo.shmaddr);
   XCloseDisplay(display);
 }
